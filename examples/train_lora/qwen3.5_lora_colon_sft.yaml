@@ -1,0 +1,50 @@
+### model
+model_name_or_path: /home/inno/.cache/modelscope/hub/models/Qwen/Qwen3.5-4B/
+trust_remote_code: true
+flash_attn: fa2
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.1
+lora_target: all
+# use_rslora: true  # 高秩时(≥64时，可尝试)
+
+### dataset
+dataset: colon_train
+eval_dataset: colon_val
+# template: qwen3_5_nothink
+template: qwen3_5
+cutoff_len: 2048
+overwrite_cache: false
+preprocessing_num_workers: 4
+neat_packing: false      
+# neftune_noise_alpha: 5
+
+### output
+output_dir: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-32-64-0.1-warmup-0.05-decay-0.01-batch4
+logging_steps: 10
+save_strategy: epoch
+eval_strategy: epoch
+save_total_limit: 13
+load_best_model_at_end: true
+metric_for_best_model: eval_loss
+plot_loss: true
+overwrite_output_dir: true
+report_to: tensorboard # choices: [none, wandb, tensorboard, swanlab, mlflow]
+
+### train
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 2
+learning_rate: 1.0e-4
+num_train_epochs: 5.0
+lr_scheduler_type: cosine
+weight_decay: 0.01
+warmup_ratio: 0.05
+bf16: true
+ddp_timeout: 30000
+gradient_checkpointing: false
