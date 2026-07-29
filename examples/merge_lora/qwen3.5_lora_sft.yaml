@@ -1,12 +1,13 @@
 ### model
-model_name_or_path: /home/inno/.cache/modelscope/hub/models/Qwen/Qwen3.5-2B/
-adapter_name_or_path: /media/inno/work_dirs/LLM/LlamaFactory/outputs-sft-qwen3.5-2b-v1/
+model_name_or_path: /home/inno/.cache/modelscope/hub/models/Qwen/Qwen3.5-4B/
+adapter_name_or_path: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4/checkpoint-166/
 trust_remote_code: true
 finetuning_type: lora
-template: qwen3_5_nothink
+# template: qwen3_5_nothink
+template: qwen3_5
 
 ### export
-export_dir: /media/inno/work_dirs/LLM/LlamaFactory/outputs-sft-qwen3.5-2b-v1/merged/
-export_size: 2
+export_dir: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4/merged/
+export_size: 5
 export_device: cpu
 export_legacy_format: false
