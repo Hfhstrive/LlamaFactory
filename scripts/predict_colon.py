@@ -10,7 +10,7 @@ def main():
     # 1. 指定推理参数 (与微调 YAML 配置相对应)
     args = {
         "model_name_or_path": "/home/inno/.cache/modelscope/hub/models/Qwen/Qwen3.5-4B/",
-        "adapter_name_or_path": "/media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-32-64-0.1-warmup-0.05-decay-0.01-batch4/checkpoint-166/",  # LLaMA-Factory 的微调输出路径
+        "adapter_name_or_path": "/media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4/checkpoint-166/",  # LLaMA-Factory 的微调输出路径
         # "template": "qwen3_5_nothink",
         "template": "qwen3_5",
         "finetuning_type": "lora",
@@ -51,7 +51,7 @@ def main():
     print(f"总计收集到待测样例数: {len(inputs_to_run)}")
 
     # 结果输出路径 (输出到 LLaMA-Factory 对应路径中)
-    output_json_path = '/media/inno/output/LLM/colon/qwen3.5-4b-v4-llamafactory-lora-32-64-0.1-warmup-0.05-decay-0.01-batch4-e2/val.json'
+    output_json_path = '/media/inno/output/LLM/colon/qwen3.5-4b-v4-llamafactory-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4-e2/val.json'
     results = {}
     total_generated_tokens = 0
 

@@ -7,8 +7,8 @@ flash_attn: fa2
 stage: sft
 do_train: true
 finetuning_type: lora
-lora_rank: 32
-lora_alpha: 64
+lora_rank: 64
+lora_alpha: 128
 lora_dropout: 0.1
 lora_target: all
 # use_rslora: true  # 高秩时(≥64时，可尝试)
@@ -25,7 +25,7 @@ neat_packing: false
 # neftune_noise_alpha: 5
 
 ### output
-output_dir: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-32-64-0.1-warmup-0.05-decay-0.01-batch4
+output_dir: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4
 logging_steps: 10
 save_strategy: epoch
 eval_strategy: epoch
