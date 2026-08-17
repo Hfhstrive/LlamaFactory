@@ -1,13 +1,15 @@
 ### model
 model_name_or_path: /home/inno/.cache/modelscope/hub/models/Qwen/Qwen3.5-4B/
-adapter_name_or_path: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4/checkpoint-166/
+# adapter_name_or_path: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4/checkpoint-166/ # colon 模型
+adapter_name_or_path: /media/inno/work_dirs/LLM/LlamaFactory/gi/outputs-sft-qwen3.5-4b-v2-lora-32-64-0.05-warmup-0.05-decay-0.05-batch4-lr1e-4-neftune5-packing-rslora/checkpoint-174/  # GI 模型 
 trust_remote_code: true
 finetuning_type: lora
 # template: qwen3_5_nothink
 template: qwen3_5
 
 ### export
-export_dir: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4/merged/
+# export_dir: /media/inno/work_dirs/LLM/LlamaFactory/colon/outputs-sft-qwen3.5-4b-v4-lora-64-128-0.1-warmup-0.05-decay-0.01-batch4/merged/ # colon 模型
+export_dir: /media/inno/work_dirs/LLM/LlamaFactory/gi/outputs-sft-qwen3.5-4b-v2-lora-32-64-0.05-warmup-0.05-decay-0.05-batch4-lr1e-4-neftune5-packing-rslora/merged/ # GI 模型
 export_size: 5
 export_device: cpu
 export_legacy_format: false

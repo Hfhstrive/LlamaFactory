@@ -1,4 +1,12 @@
 {
+  "gi_train": {
+    "file_name": "/media/inno/LLM/GI/TrainData/V2/sharegpt/train.jsonl",
+    "formatting": "sharegpt"
+  },
+  "gi_val": {
+    "file_name": "/media/inno/LLM/GI/TrainData/V2/sharegpt/val.jsonl",
+    "formatting": "sharegpt"
+  },
   "colon_train": {
     "file_name": "/media/inno/LLM/肠镜/report/V4/train/train.jsonl",
     "formatting": "sharegpt"
