@@ -22,7 +22,6 @@ import argparse
 import tempfile
 import subprocess
 import warnings
-from ipdb import set_trace
 from typing import Optional, Any
 
 warnings.filterwarnings("ignore")
@@ -42,6 +41,256 @@ try:
     from hotword import PhonemeCorrector
 except ImportError:
     PhonemeCorrector = None
+
+
+class MedicalRAGRetriever:
+    """消化内镜 RAG 医疗检索增强器 (完全对齐 predict_gi_gguf_rag.py)"""
+    def __init__(self, kb_dir: str = "/media/inno/LLM/RAG_knowledeg"):
+        self.kb_dir = kb_dir
+        self.rules = []
+        self._init_knowledge_base()
+
+    def _init_knowledge_base(self):
+        """初始化医疗规则知识库"""
+        rules_path = os.path.join(self.kb_dir, "rules.json")
+        if os.path.exists(rules_path):
+            with open(rules_path, "r", encoding="utf-8") as f:
+                self.rules = json.load(f)
+            print(f"成功加载医疗标准规范规则库 ({len(self.rules)} 条): {rules_path}")
+        else:
+            print(f"⚠️ 规则库文件不存在: {rules_path}")
+
+    def retrieve(self, query: str, sys_prompt: str = "", top_k: int = 4) -> str:
+        """按标点切分子句并结合解剖器官层级，精准绑定各病变实体的局域解剖部位，防止多部位跨句干扰与错配"""
+        if not self.rules:
+            return ""
+
+        # 1. 判定检查类型 (胃镜 vs 肠镜硬隔离)
+        is_gastro = "胃镜" in sys_prompt or "胃" in query or "食管" in query or "十二指肠" in query
+        gi_target = "胃镜检查" if is_gastro else "肠镜检查"
+        candidate_rules = [r for r in self.rules if r.get('gi') == gi_target or not r.get('gi')]
+
+        matched_rules = []
+
+        # 2. 特殊重要分型/标准强匹配逻辑 (支持单词触发与同子句多词组合 AND 触发)
+        special_specs = [
+            (
+                ["木村", "竹本", "萎缩", "C1", "C2", "C3", "O1", "O2", "O3", "以白为主", "血管透见", "皱襞变平", "皱襞消失"], 
+                [], 
+                "萎缩性胃炎"
+            ),
+            (
+                ["Boston", "波士顿", "BBPS", "清洁度", "粪水", "粪渣"], 
+                [], 
+                "Boston"
+            ),
+            (
+                ["反流", "洛杉矶", "LA-", "A级", "B级", "C级", "D级"], 
+                [["食管", "糜烂"], ["齿状线", "糜烂"], ["食管", "破损"], ["齿状线", "破损"]], 
+                "反流性食管炎"
+            ),
+            (
+                ["Barrett", "巴雷特", "齿状线上移", "舌型", "全周型", "岛型"], 
+                [["齿状线", "上移"]], 
+                "Barrett"
+            ),
+            (
+                ["食管癌", "食管占位", "蕈伞型", "溃疡型", "溃疡浸润型", "弥漫浸润型"], 
+                [["食管", "肿物"], ["食管", "占位"], ["食管", "B3"], ["IPCL", "B3"]], 
+                "食管癌"
+            ),
+            (
+                ["胃癌", "胃占位", "Borrmann", "鲍尔曼", "博尔曼", "胃癌占位"], 
+                [["胃", "肿物"], ["胃", "占位"]], 
+                "胃癌"
+            ),
+            (
+                ["结肠癌", "结肠占位", "蕈伞型", "溃疡型", "溃疡浸润型", "弥漫浸润型"], 
+                [["结肠", "肿物"], ["结肠", "占位"]], 
+                "结肠癌"
+            ),
+            (
+                ["食管癌", "IPCL", "AVA", "食管占位", "碘染"], 
+                [["食管", "茶褐色"], ["食管", "粗糙"], ["食管", "B1"], ["食管", "B2"], ["IPCL", "B1"], ["IPCL", "B2"], ["食管", "低级别上皮内瘤变"], ["食管", "高级别上皮内瘤变"], ["食管", "LGIN"], ["食管", "HGIN"], ["食管", "异型增生"], ['碘染', '不染'], ['碘染', '淡染']], 
+                "食管黏膜病变"
+            ),
+            (
+                ["DL", "IMVP", "IMSP", "微表面", "微血管", "VS"], 
+                [["胃", "茶褐色"], ["胃", "低级别上皮内瘤变"], ["胃", "高级别上皮内瘤变"], ["胃", "LGIN"], ["胃", "HGIN"], ["胃", "异型增生"], ['靛胭脂', '边界清晰'], ['醋酸', '紊乱']], 
+                "胃黏膜病变"
+            ),
+            (
+                ["平滑肌瘤"], 
+                [], 
+                "食管黏膜下隆起"
+            ),
+            (
+                ["间质瘤"], 
+                [], 
+                "胃黏膜下隆起"
+            ),
+            (
+                ["霉菌", "真菌", "念珠菌", "细胞刷"], 
+                [["食管", "白色","附着物"], ["食管", "白斑"]], 
+                "霉菌性食管炎"
+            ),
+            (
+                ["串珠状", "结节状"], 
+                [["食管", "静脉曲张"], ["食管", "曲张静脉"]], 
+                "食管静脉曲张"
+            ),
+            (
+                [], 
+                [["食管", "斑驳"], ["食管", "花斑样改变"]], 
+                "斑驳食管"
+            ),
+            (
+                ["食管裂孔疝", "疝囊", '滑动型疝', '食管旁疝', '混合型疝', '巨大疝'], 
+                [], 
+                "食管裂孔疝"
+            ),
+            (
+                [], 
+                [["胃", "静脉曲张"], ["胃", "曲张静脉"]], 
+                "胃静脉曲张"
+            ),
+            (
+                ["异位"], 
+                [["食管", "橘红色"]], 
+                "食管胃黏膜异位"
+            ),
+            (
+                ["马赛克", "蛇皮样"],
+                [],
+                "门脉高压性胃病"
+            ),
+            (
+                ["HP", "幽门螺旋杆菌", "现症感染"],
+                [],
+                "HP现症感染"
+            )
+        ]
+
+        query_lower = query.lower()
+        major_clauses = re.split(r'[。；;!\?\n]+', query_lower)
+
+        for single_kws, combo_kws_list, target_title in special_specs:
+            is_hit = False
+
+            if any(kw.lower() in query_lower for kw in single_kws):
+                is_hit = True
+
+            if not is_hit and combo_kws_list:
+                for mc in major_clauses:
+                    for combo in combo_kws_list:
+                        if all(ckw.lower() in mc for ckw in combo):
+                            is_hit = True
+                            break
+                    if is_hit:
+                        break
+
+            if is_hit:
+                for r in candidate_rules:
+                    title_name = r.get("title", "")
+                    cat_name = r.get("category", "")
+                    if (target_title in title_name or target_title in cat_name) and f"非{target_title}" not in title_name:
+                        if r not in matched_rules:
+                            matched_rules.append(r)
+                            break
+
+        def get_clause_location(q_text: str, target_kw: str) -> str:
+            all_locs = ["十二指肠", "食管", "贲门", "胃底", "胃体", "胃角", "胃窦", "幽门", "回肠", "结肠", "直肠", "盲肠", "肛周"]
+            clauses = re.split(r'[。；;!\?\n，,]+', q_text)
+            hit_idx = -1
+            for idx, c in enumerate(clauses):
+                if target_kw in c:
+                    hit_idx = idx
+                    break
+            if hit_idx != -1:
+                for loc in all_locs:
+                    if loc in clauses[hit_idx]:
+                        return loc
+                for idx in range(hit_idx - 1, -1, -1):
+                    for loc in all_locs:
+                        if loc in clauses[idx]:
+                            return loc
+            return ""
+
+        entity_keywords = [
+            "息肉", "溃疡", "黄色素瘤", "黄色瘤", "黏膜下隆起", "黏膜下肿瘤", "SMT", "静脉曲张", "静脉瘤", "乳头状瘤",
+            "憩室", "狭窄", "糜烂", "平滑肌瘤", "十二指肠球炎", "十二指肠溃疡",
+            "直肠炎", "结肠炎", "溃疡性结肠炎", "克罗恩", "锯齿状病变", "SSL", "侧向发育", "LST", "NICE", "Pit", "PP", "JNET", "山田"
+        ]
+
+        hit_entities = [kw for kw in entity_keywords if kw.lower() in query_lower]
+
+        for kw in hit_entities:
+            if len(matched_rules) >= top_k:
+                break
+
+            clause_loc = get_clause_location(query, kw)
+            if clause_loc in ["食管上段", "食管中段", "食管下段", "门齿", "食管"]:
+                loc_root = "食管"
+            elif clause_loc in ["胃体", "胃窦", "胃角", "胃底", "贲门", "幽门", "胃"]:
+                loc_root = "胃"
+            elif clause_loc in ["十二指肠球部", "十二指肠降部", "球部", "降段", "十二指肠"]:
+                loc_root = "十二指肠"
+            elif clause_loc in ["盲肠", "升结肠", "横结肠", "降结肠", "乙状结肠", "回盲", "回盲部", "结肠"]:
+                loc_root = "结肠"
+            elif clause_loc in ["直肠", "肛周", "肛门"]:
+                loc_root = "直肠"
+            elif clause_loc in ["回肠末端", "末端回肠", "回肠"]:
+                loc_root = "回肠"
+            else:
+                loc_root = clause_loc
+
+            best_rule_for_kw = None
+            best_score = -1
+
+            for r in candidate_rules:
+                if r in matched_rules:
+                    continue
+
+                title_name = r.get("title", "")
+                cat_name = r.get("category", "")
+
+                if kw in title_name or kw in cat_name:
+                    score = 1
+                    if clause_loc and (clause_loc in title_name or (loc_root and loc_root in title_name)):
+                        score += 15
+                    elif clause_loc and (clause_loc in cat_name or (loc_root and loc_root in cat_name)):
+                        score += 10
+
+                    if score > best_score:
+                        best_score = score
+                        best_rule_for_kw = r
+
+            if best_rule_for_kw:
+                matched_rules.append(best_rule_for_kw)
+
+        if not matched_rules:
+            for r in candidate_rules:
+                if "慢性浅表性胃炎" in r.get("title", "") or "未见明显异常" in r.get("title", ""):
+                    matched_rules.append(r)
+                    break
+
+        unique_rules = []
+        for r in matched_rules:
+            if r not in unique_rules:
+                unique_rules.append(r)
+            if len(unique_rules) >= top_k:
+                break
+
+        formatted_list = []
+        for idx, r in enumerate(unique_rules, 1):
+            cat_name = r.get("category", "")
+            title_name = r.get("title", "")
+            content_str = r.get("content", "").strip()
+            formatted_list.append(f"• 规范{idx}【{cat_name} - {title_name}】:\n{content_str}")
+
+        if formatted_list:
+            return "【参考病变规范与标准模板】:\n" + "\n\n".join(formatted_list)
+        return ""
 
 template_process = {
     '慢性浅表性胃炎': {
@@ -137,7 +386,7 @@ DUP_LIST = [
     [['黄色瘤'], ['食管黄色瘤', '胃黄色瘤']],
     [['食管乳头状瘤'], ['食管黏膜隆起'], ['食管息肉']],
     [['静脉瘤', '平滑肌瘤'], ['食管SMT'], ['食管黏膜下肿瘤'], ['食管黏膜下隆起'], ['食管黏膜隆起']],
-    [['间质瘤', '异位胰腺'], ['胃SMT'], ['胃黏膜下肿瘤']],
+    [['间质瘤', '异位胰腺'], ['胃SMT'], ['胃黏膜下肿瘤'], ['胃黏膜下隆起']],
     [['增生性息肉', '胃底腺息肉'], ['胃息肉'], ['胃黏膜隆起']],
     [['食管静脉曲张', '胃静脉曲张']],
     [['复合溃疡', '对吻溃疡', '霜斑样溃疡'], ['胃溃疡', '十二指肠溃疡']],
@@ -152,10 +401,10 @@ DUP_LIST = [
     [['肠化'], ['肠上皮化生']],
 ]
 
-# 胃镜诊断结论关键词允许列表 (自动提纯 DUP_LIST 中出现的所有疾病名称，并补充 '门脉高压性胃病')
+# 胃镜诊断结论关键词允许列表 (自动提纯 DUP_LIST 中出现的所有疾病名称，并补充 '门脉高压性胃病'、'食管溃疡')
 GASTRO_ALLOWED_KEYWORDS = list({
     item for group in DUP_LIST for tier in group for item in tier
-} | {'门脉高压性胃病'})
+} | {'门脉高压性胃病', '食管溃疡'})
 
 def normalize_disease_name(name: str) -> str:
     """归一化诊断疾病名称，去除‘型’字或做形式统一（如 萎缩性胃炎C2型 -> 萎缩性胃炎C2）"""
@@ -208,10 +457,13 @@ def deduplicate_concl(conclusion: list) -> tuple:
 def extract_21_diseases(text: str) -> list:
     """从 final_report 的 <think> 过程中提取 2.1 结论性疾病列表"""
     diseases = []
-    if '2.1' in text:
-        p21_part = text.split('2.1')[1]
-        if '2.2' in p21_part:
-            p21_part = p21_part.split('2.2')[0]
+    # 正则精准匹配步骤编号 2.1（例如 "2.1"、"2.1："、"2.1."、"2.1、"）避免误切 "2.1cm" 等尺寸
+    m21 = re.search(r'(?:^|\n)\s*2\.1[\s:：、.]', text)
+    if m21:
+        p21_part = text[m21.end():]
+        m22 = re.search(r'(?:^|\n)\s*2\.2[\s:：、.]', p21_part)
+        if m22:
+            p21_part = p21_part[:m22.start()]
         if '：' in p21_part:
             p21_part = p21_part.split('：', 1)[1]
         elif ':' in p21_part:
@@ -268,10 +520,13 @@ def extract_22_diseases(text: str) -> list:
     """
     diseases = []
     cancer_keywords = ['食管癌', '胃癌', '十二指肠癌']
-    if '2.2' in text:
-        p22_part = text.split('2.2')[1]
-        if '2.3' in p22_part:
-            p22_part = p22_part.split('2.3')[0]
+    # 正则精准匹配步骤编号 2.2（例如 "2.2"、"2.2："、"2.2."、"2.2、"）避免误切 "2.2cm" 等尺寸
+    m22 = re.search(r'(?:^|\n)\s*2\.2[\s:：、.]', text)
+    if m22:
+        p22_part = text[m22.end():]
+        m23 = re.search(r'(?:^|\n)\s*2\.3[\s:：、.]', p22_part)
+        if m23:
+            p22_part = p22_part[:m23.start()]
         bracket_matches = re.findall(r'\[([^\]]+)\]', p22_part)
         for match in bracket_matches:
             if '部位' in match and '特征描述' in match:
@@ -428,6 +683,7 @@ class Qwen3ASR17BGGUFEngine:
             model_path=model_path,
             n_ctx=n_ctx,
             n_gpu_layers=-1,
+            seed=42,       # 显式固定 C++ 随机种子为 42
             verbose=False
         )
 
@@ -575,7 +831,64 @@ def detect_gi_type(text: str, audio_path: str = "") -> str:
     elif has_gastro:
         return "gastro"
     else:
-        assert '未识别胃肠镜类型'
+        raise ValueError('未识别胃肠镜类型')
+
+
+def extract_json_from_text(text: str) -> Optional[dict]:
+    """
+    鲁棒解析大模型输出文本中的 JSON 字典对象（支持嵌套字典、Markdown 代码块及混杂文本）
+    """
+    if not text:
+        return None
+
+    # 1. 优先尝试从 ```json ... ``` 代码块中提取
+    json_blocks = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', text, re.IGNORECASE)
+    for block in reversed(json_blocks):
+        block = block.strip()
+        if block.startswith('{') and block.endswith('}'):
+            try:
+                res = json.loads(block)
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+
+    # 2. 括号平衡栈扫描：提取所有完整闭合的最外层 {} 候选块
+    candidates = []
+    stack = []
+    start_idx = -1
+
+    for i, char in enumerate(text):
+        if char == '{':
+            if not stack:
+                start_idx = i
+            stack.append(char)
+        elif char == '}':
+            if stack:
+                stack.pop()
+                if not stack and start_idx != -1:
+                    candidates.append(text[start_idx:i+1])
+                    start_idx = -1
+
+    # 3. 逆向（从后往前）优先筛选包含报告关键 key 的 JSON 对象
+    for candidate in reversed(candidates):
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict) and any(k in obj for k in ["镜检所见", "诊断结论", "检查过程", "检查结果"]):
+                return obj
+        except Exception:
+            continue
+
+    # 4. 逆向尝试任意合法 JSON 字典
+    for candidate in reversed(candidates):
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+
+    return None
 
 
 def fix_boston_scores(text: str) -> str:
@@ -599,7 +912,9 @@ def process_single_audio(
     asr_engine: Qwen3ASR17BGGUFEngine,
     llm_engine: Llama,
     corrector: Optional[Any],
-    output_dir: str
+    output_dir: str,
+    rag_retriever: Optional[MedicalRAGRetriever] = None,
+    top_k: int = 4
 ) -> dict:
     """处理单个音频/视频文件并导出报告 JSON"""
     # 测量时长
@@ -625,19 +940,34 @@ def process_single_audio(
     if gi_type_option in ["gastro", "colon"]:
         gi_type = gi_type_option
     else:
-        gi_type = detect_gi_type(final_asr_text, audio_path)
+        try:
+            gi_type = detect_gi_type(final_asr_text, audio_path)
+        except ValueError as e:
+            print(f"⚠️ {e}，默认降级为胃镜 (gastro) 处理。")
+            gi_type = "gastro"
 
     if gi_type == "gastro":
-        system_prompt = "你是一个严谨的胃镜专家，请精准提取医生口语中的病变部位与特征描述，并结合标准胃镜规范生成结构化镜检所见与诊断结论，严禁漏诊与误诊。"
+        base_sys_prompt = "你是一个严谨的胃镜专家，请精准提取医生口语中的病变部位与特征描述，并结合标准胃镜规范生成结构化镜检所见与诊断结论，严禁漏诊与误诊。"
     elif gi_type == "colon":
-        system_prompt = "你是一个严谨的肠镜专家，请精准提取医生口语中的阳性病变与关键信息，并结合标准肠镜模板自动规范补充未见异常部位的阴性描述与诊断结论，严禁漏诊与误诊。"
+        base_sys_prompt = "你是一个严谨的肠镜专家，请精准提取医生口语中的阳性病变与关键信息，并结合标准肠镜模板自动规范补充未见异常部位的阴性描述与诊断结论，严禁漏诊与误诊。"
     else:
         gi_type = "gastro"
+        base_sys_prompt = "你是一个严谨的胃镜专家，请精准提取医生口语中的病变部位与特征描述，并结合标准胃镜规范生成结构化镜检所见与诊断结论，严禁漏诊与误诊。"
 
     prompt_prefix = "提取有效信息,生成标准胃镜报告：" if gi_type == "gastro" else "提取有效信息,生成标准肠镜报告："
     user_input_prompt = f"{prompt_prefix}{final_asr_text}"
     if gi_type == "gastro":
         user_input_prompt += "？"
+
+    # 若启用 RAG 检索增强规范注入
+    if rag_retriever is not None:
+        retrieved_knowledge = rag_retriever.retrieve(user_input_prompt, sys_prompt=base_sys_prompt, top_k=top_k)
+        if retrieved_knowledge:
+            system_prompt = f"{base_sys_prompt}\n\n{retrieved_knowledge}"
+        else:
+            system_prompt = base_sys_prompt
+    else:
+        system_prompt = base_sys_prompt
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -692,28 +1022,8 @@ def process_single_audio(
     print(f"【流水线总耗时】: {total_duration:.2f} 秒")
     print("=" * 60)
 
-    # 3.4 提取镜检所见和诊断结论额外保存为 key "report"
-    extracted_report = None
-    
-    # 策略 1: 逆向寻找文本中最后一个出现的 {"镜检所见" JSON 块
-    idx = final_report.rfind('{"镜检所见"')
-    if idx != -1:
-        end_idx = final_report.find('}', idx)
-        if end_idx != -1:
-            try:
-                extracted_report = json.loads(final_report[idx:end_idx+1])
-            except Exception:
-                pass
-
-    # 策略 2: 通用逆向查找最后一个 JSON 对象
-    if not isinstance(extracted_report, dict):
-        try:
-            last_start = final_report.rfind('{')
-            last_end = final_report.rfind('}')
-            if last_start != -1 and last_end != -1 and last_start < last_end:
-                extracted_report = json.loads(final_report[last_start:last_end+1])
-        except Exception:
-            pass
+    # 3.4 鲁棒提取镜检所见和诊断结论额外保存为 key "report"
+    extracted_report = extract_json_from_text(final_report)
 
     if not isinstance(extracted_report, dict):
         extracted_report = {"镜检所见": final_report, "诊断结论": ""}
@@ -762,7 +1072,7 @@ def main():
     parser.add_argument(
         "--audio_path",
         type=str,
-        default="/media/inno/LLM/GI/TrainData/V1/audio/val/胃镜",
+        default="/media/inno/LLM/GI/TrainData/V2/audio/val/胃镜",
         # default="/media/inno/ASR/胃镜/audio/test/汇总/",
         # default="/media/inno/LLM/GI/TrainData/V2/audio/val/食管黏膜隆起/138_166.wav",
         help="输入的音频/视频文件路径或文件夹路径 (支持 wav, mp3, m4a, flac, aac, mp4 等)"
@@ -802,6 +1112,25 @@ def main():
         help="GGUF 格式的 LLM 模型绝对路径"
     )
 
+    # RAG 检索增强参数
+    parser.add_argument(
+        "--rag",
+        action="store_true",
+        help="是否启用 RAG 医疗规范检索增强 (默认不开启)"
+    )
+    parser.add_argument(
+        "--kb_dir",
+        type=str,
+        default="/media/inno/LLM/RAG_knowledeg",
+        help="RAG 医疗规范知识库 rules.json 所在的文件夹路径"
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=4,
+        help="RAG 检索返回的最大规范条数 (默认: 4)"
+    )
+
     # 检查类型打标参数
     parser.add_argument(
         "--gi_type",
@@ -815,9 +1144,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        # default="/media/inno/output/LLM/gi/汇总/",
-        # default="/media/inno/output/LLM/gi/test_0816/",
-        default="/media/inno/output/LLM/gi/v2_val_0816/",
+        default="/media/inno/output/LLM/gi/gi_report_rag/",
         help="报告 JSON 保存的文件夹路径"
     )
 
@@ -845,7 +1172,7 @@ def main():
 
     print("=" * 60)
     print("========== 消化内镜端到端语音转报告 (ASR GGUF + LLM GGUF) 流水线 ==========")
-    print(f"检索到待处理媒体文件共 {len(audio_files)} 个。")
+    print(f"检索到待处理媒体文件共 {len(audio_files)} 个 | RAG 检索增强: {'开启 ✅' if args.rag else '关闭 ❌'}")
     print("=" * 60)
 
     # 1. 初始化 ASR 引擎
@@ -863,6 +1190,12 @@ def main():
         corrector = PhonemeCorrector(threshold=0.85)
         with open(args.hotword_path, "r", encoding="utf-8") as f:
             corrector.update_hotwords(f.read())
+
+    # 初始化 RAG 检索增强器 (若启用)
+    rag_retriever = None
+    if args.rag:
+        print(f"\n[RAG 模块] 开启 RAG 检索增强，初始化知识库 ({args.kb_dir})...")
+        rag_retriever = MedicalRAGRetriever(kb_dir=args.kb_dir)
 
     # 2. 初始化 LLM 报告生成引擎
     print("\n[阶段 2/3] 初始化 LLM 报告生成引擎...")
@@ -888,7 +1221,9 @@ def main():
             asr_engine=asr_engine,
             llm_engine=llm_engine,
             corrector=corrector,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            rag_retriever=rag_retriever,
+            top_k=args.top_k
         )
         summary_results.append(res)
 
