@@ -22,6 +22,7 @@ import argparse
 import tempfile
 import subprocess
 import warnings
+from ipdb import set_trace
 from typing import Optional, Any
 
 warnings.filterwarnings("ignore")
@@ -131,7 +132,7 @@ class MedicalRAGRetriever:
             ),
             (
                 ["霉菌", "真菌", "念珠菌", "细胞刷"], 
-                [["食管", "白色","附着物"], ["食管", "白斑"]], 
+                [["食管", "白色","附着物"], ["食管", "白斑"], ["食管", "白苔"]], 
                 "霉菌性食管炎"
             ),
             (
@@ -543,23 +544,37 @@ def extract_22_diseases(text: str) -> list:
     return diseases
 
 
-def process_gastro_report(extracted_report: dict) -> dict:
+def process_gastro_report(report_text: str, extracted_report: Optional[dict] = None) -> tuple[dict, list]:
     """
     胃镜报告专属后处理逻辑：
-    1. 诊断结论去重与模板 Key 提取：
+    1. 提取 2.1 结论性疾病与 2.2 特征病变名称，得到中间校准结论 (intermediate_calibrated_concl)
+    2. 诊断结论去重与模板 Key 提取：
        - 对诊断结论列表执行 deduplicate_concl（基于 DUP_LIST 优先级去重）；
        - 过滤允许关键词 GASTRO_ALLOWED_KEYWORDS；
        - 检查是否存在 template_process 中的 key。若存在，取匹配到的 key 作为模板 key；
        - 若不存在任何 template_process key，默认采用 "慢性浅表性胃炎" 模板，并在诊断结论中追加 "慢性浅表性胃炎"。
-    2. 镜检所见 8 个部位解析与模板兜底补全：
+    3. 镜检所见 8 个部位解析与模板兜底补全：
        - 检查 8 个解剖部位 GASTRO_PARTS；
        - 若哪一个部位缺少，在语句中定位出现位置，将该位置到 "。" 的内容或者下一步 "部位" 前，作为该部位的输入；
        - 若全文未找到该部位，参考 template_process 中对应模版的部位补充。
     """
-    if not isinstance(extracted_report, dict):
-        return extracted_report
+    # 1. 提取 2.1 与 2.2 疾病
+    list_21 = extract_21_diseases(report_text)
+    list_22 = extract_22_diseases(report_text)
+    intermediate_calibrated_concl = list_21 + list_22
 
-    # 1. 诊断结论后处理
+    if extracted_report is None:
+        extracted_report = extract_json_from_text(report_text)
+        if not isinstance(extracted_report, dict):
+            extracted_report = {"镜检所见": report_text, "诊断结论": ""}
+
+    if intermediate_calibrated_concl:
+        extracted_report["诊断结论"] = intermediate_calibrated_concl
+
+    if not isinstance(extracted_report, dict):
+        return extracted_report, intermediate_calibrated_concl
+
+    # 2. 诊断结论后处理
     matched_template_key = None
     if "诊断结论" in extracted_report:
         raw_concl = extracted_report["诊断结论"]
@@ -598,7 +613,7 @@ def process_gastro_report(extracted_report: dict) -> dict:
         matched_template_key = "慢性浅表性胃炎"
         extracted_report["诊断结论"] = "慢性浅表性胃炎"
 
-    # 2. 镜检所见后处理
+    # 3. 镜检所见后处理
     if "镜检所见" in extracted_report:
         findings = extracted_report["镜检所见"]
         parsed_findings = {}
@@ -661,7 +676,68 @@ def process_gastro_report(extracted_report: dict) -> dict:
 
         extracted_report["镜检所见"] = final_findings
 
-    return extracted_report
+    return extracted_report, intermediate_calibrated_concl
+
+
+def fix_colon_proctitis_concl(concl: Any) -> Any:
+    """若肠道报告诊断结论中同时出现‘结肠炎’和‘直肠炎’，修正合并为‘结直肠炎’"""
+    if isinstance(concl, str):
+        items = [c.strip() for c in re.split(r'[；;、，,\n]', concl) if c.strip()]
+        is_str = True
+    elif isinstance(concl, list):
+        items = [str(c).strip() for c in concl if str(c).strip()]
+        is_str = False
+    else:
+        return concl
+
+    has_colon = any("结肠炎" in item for item in items)
+    has_proct = any("直肠炎" in item for item in items)
+
+    if has_colon and has_proct:
+        new_items = []
+        merged_added = False
+        for item in items:
+            if item in ["结肠炎", "直肠炎"]:
+                if not merged_added:
+                    new_items.append("结直肠炎")
+                    merged_added = True
+            elif item in ["慢性结肠炎", "慢性直肠炎"]:
+                if not merged_added:
+                    new_items.append("慢性结直肠炎")
+                    merged_added = True
+            elif "结肠炎" in item or "直肠炎" in item:
+                if not merged_added:
+                    new_items.append("结直肠炎")
+                    merged_added = True
+            else:
+                new_items.append(item)
+
+        dedup_items = list(dict.fromkeys(new_items))
+        return "；".join(dedup_items) if is_str else dedup_items
+
+    return concl
+
+
+def process_colon_report(report_text: str, extracted_report: Optional[dict] = None) -> tuple[str, dict]:
+    """
+    肠镜报告专属后处理逻辑：
+    1. 波士顿评分 (BBPS) 纠错
+    2. 诊断结论纠错：若同时出现‘结肠炎’和‘直肠炎’，修正为‘结直肠炎’
+    """
+    # 1. 波士顿评分纠错
+    report_text = fix_boston_scores(report_text)
+
+    # 提取结构化报告
+    if extracted_report is None:
+        extracted_report = extract_json_from_text(report_text)
+        if not isinstance(extracted_report, dict):
+            extracted_report = {"镜检所见": report_text, "诊断结论": ""}
+
+    # 2. 诊断结论纠错（结肠炎 + 直肠炎 -> 结直肠炎）
+    if isinstance(extracted_report, dict) and "诊断结论" in extracted_report:
+        extracted_report["诊断结论"] = fix_colon_proctitis_concl(extracted_report["诊断结论"])
+
+    return report_text, extracted_report
 
 
 class Qwen3ASR17BGGUFEngine:
@@ -964,6 +1040,7 @@ def process_single_audio(
         retrieved_knowledge = rag_retriever.retrieve(user_input_prompt, sys_prompt=base_sys_prompt, top_k=top_k)
         if retrieved_knowledge:
             system_prompt = f"{base_sys_prompt}\n\n{retrieved_knowledge}"
+            print(f"【RAG 检索匹配到的参考规范】:\n{retrieved_knowledge}")
         else:
             system_prompt = base_sys_prompt
     else:
@@ -986,25 +1063,22 @@ def process_single_audio(
     raw_report = completion["choices"][0]["message"]["content"] or ""
     llm_duration = time.time() - llm_start_time
 
-    # 后处理 1: 波士顿评分纠错
-    if gi_type == 'colon':
-        report_with_boston = fix_boston_scores(raw_report)
-    else:
-        report_with_boston = raw_report
-
-    # 后处理 2: 对 LLM 输出的报告使用 hotword_path 医学热词表再次进行同音字/错别字纠错
+    # 后处理 1: 医学热词表纠错
     if corrector is not None:
-        corrected_report_obj = corrector.correct(report_with_boston)
-        final_report = corrected_report_obj.text
+        corrected_report_obj = corrector.correct(raw_report)
+        corrected_report_text = corrected_report_obj.text
     else:
-        final_report = report_with_boston
+        corrected_report_text = raw_report
 
-    # 如果是胃镜，从 final_report 的 2.1 部分和 2.2 部分提取出校准结论
+    # 后处理 2: 区分 gastro / colon 专属报告后处理
     intermediate_calibrated_concl = []
-    if gi_type == "gastro":
-        list_21 = extract_21_diseases(final_report)
-        list_22 = extract_22_diseases(final_report)
-        intermediate_calibrated_concl = list_21 + list_22
+    if gi_type == 'colon':
+        # 肠镜后处理：1. 波士顿评分纠错；2. 结肠炎+直肠炎合并为结直肠炎
+        final_report, extracted_report = process_colon_report(corrected_report_text)
+    else:
+        # 胃镜后处理：1. 提取 2.1 与 2.2 疾病结论；2. 模板 key 匹配与去重；3. 8 个部位补全
+        final_report = corrected_report_text
+        extracted_report, intermediate_calibrated_concl = process_gastro_report(final_report)
 
     total_duration = asr_duration + llm_duration
 
@@ -1022,22 +1096,6 @@ def process_single_audio(
     print(f"【流水线总耗时】: {total_duration:.2f} 秒")
     print("=" * 60)
 
-    # 3.4 鲁棒提取镜检所见和诊断结论额外保存为 key "report"
-    extracted_report = extract_json_from_text(final_report)
-
-    if not isinstance(extracted_report, dict):
-        extracted_report = {"镜检所见": final_report, "诊断结论": ""}
-
-    # 胃镜报告 (gi_type == "gastro")：调用专属后处理 (诊断结论模板匹配与部位补全)
-    report_raw_str = json.dumps(extracted_report, ensure_ascii=False) if isinstance(extracted_report, dict) else str(extracted_report)
-    is_colon_content = any(ck in report_raw_str for ck in ["Boston", "波士顿", "结肠", "直肠", "回盲瓣", "阑尾", "肛周", "直乙交界"])
-
-    # if gi_type == "gastro" and isinstance(extracted_report, dict) and not is_colon_content:
-    if gi_type == "gastro" and isinstance(extracted_report, dict):
-        if intermediate_calibrated_concl:
-            extracted_report["诊断结论"] = intermediate_calibrated_concl
-        extracted_report = process_gastro_report(extracted_report)
-
     # 3.5 保存 JSON 结果
     file_basename = os.path.splitext(os.path.basename(audio_path))[0]
     out_json_path = os.path.join(output_dir, f"{file_basename}_report.json")
@@ -1048,6 +1106,7 @@ def process_single_audio(
         "gi_type_tag": gi_type,
         "asr_raw_text": raw_asr_text,
         "asr_corrected_text": final_asr_text,
+        "retrieved_knowledge": retrieved_knowledge if rag_retriever is not None else None,
         "report_output": final_report,
         "intermediate_calibrated_concl": intermediate_calibrated_concl if gi_type == "gastro" else [],
         "report": extracted_report,
@@ -1072,7 +1131,7 @@ def main():
     parser.add_argument(
         "--audio_path",
         type=str,
-        default="/media/inno/LLM/GI/TrainData/V2/audio/val/胃镜",
+        default="/media/inno/LLM/GI/TrainData/V2/audio/val/肠镜/",
         # default="/media/inno/ASR/胃镜/audio/test/汇总/",
         # default="/media/inno/LLM/GI/TrainData/V2/audio/val/食管黏膜隆起/138_166.wav",
         help="输入的音频/视频文件路径或文件夹路径 (支持 wav, mp3, m4a, flac, aac, mp4 等)"
@@ -1135,7 +1194,7 @@ def main():
     parser.add_argument(
         "--gi_type",
         type=str,
-        default="gastro",
+        default="colon",
         choices=["all", "gastro", "colon"],
         help="人为指定检查类型 (all: 自动判定, gastro: 强制胃镜, colon: 强制肠镜)"
     )
@@ -1144,7 +1203,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/media/inno/output/LLM/gi/gi_report_rag/",
+        default="/media/inno/output/LLM/gi/gi_report_0819/",
         help="报告 JSON 保存的文件夹路径"
     )
 
