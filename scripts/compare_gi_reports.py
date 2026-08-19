@@ -193,11 +193,11 @@ def main():
     parser.add_argument(
         "--dir_b",
         default="/media/inno/output/LLM/gi/gi_report_rag",
-        help="对比版本报告目录 (gi_report_0818)"
+        help="对比版本报告目录 (gi_report_rag)"
     )
     parser.add_argument(
         "--name_b",
-        default="gi_report_0818 (今日优化版本)",
+        default="gi_report_rag (RAG版本)",
         help="版本 B 展示名称"
     )
     parser.add_argument(
@@ -207,7 +207,7 @@ def main():
     )
     parser.add_argument(
         "--output_md",
-        default="/media/inno/output/LLM/gi/compare_gi_report_rag.md",
+        default="/media/inno/output/LLM/gi/compare_gi_report_base-vs-rag.md",
         help="输出对比 Markdown 文件路径"
     )
 
